@@ -7,17 +7,14 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/api"
 	"github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/common/model"
-
-	"github.com/jshaughn/outlier/nelson"
-	"github.com/jshaughn/outlier/scrape"
 )
 
 type options struct {
@@ -85,52 +82,102 @@ type Node struct {
 	Children []*Node
 }
 
+func (ts TSExpression) buildTree(n *Node, start, end time.Time, api v1.API) {
+	match := fmt.Sprintf("%v{source_service=\"%v\",source_version=\"%v\"}", ts, n.Name, n.Version)
+
+	// fetch the root time series
+	series := promSeries(match, start, end, api)
+	//fmt.Printf("Found [%v] parent series\n", len(series))
+
+	// identify the unique destination services
+	destinations := toDestinations(n.Name, n.Version, series)
+	//fmt.Printf("Found [%v] child destinations\n", len(destinations))
+
+	if len(destinations) > 0 {
+		n.Children = make([]*Node, len(destinations))
+		i := 0
+		for k, _ := range destinations {
+			s := strings.Split(k, " ")
+			child := Node{
+				Name:    s[0],
+				Version: s[1],
+				Parent:  n,
+			}
+			fmt.Printf("Child Service: %v(%v)->%v(%v)\n", n.Name, n.Version, child.Name, child.Version)
+			n.Children[i] = &child
+			i++
+			ts.buildTree(&child, start, end, api)
+		}
+	}
+}
+
 var trees []Node
 
 // process() is expected to execute as a goroutine
-func (ts TSExpression) process(o options, wg sync.WaitGroup, api v1.API) {
+func (ts TSExpression) process(o options, wg *sync.WaitGroup, api v1.API) {
 	defer wg.Done()
 
 	start := time.Now()
 	if o.offset.Seconds() > 0 {
 		start = start.Add(-o.offset)
 	}
+	start = start.Add(-o.interval)
 
 	for {
 		end := start.Add(o.interval)
 		match := fmt.Sprintf("%v{source_service=\"\"}", ts)
 
-		series := ts.series(match, start, end, o, api)
-		roots := make(map[string]bool)
-		for _, s := range series {
-			service, serviceOk := s["destination_service"]
-			version, versionOk := s["destination_version"]
-			if serviceOk && versionOk {
-				k := fmt.Sprintf("%v (%v)", service, version)
-				roots[k] = true
-			}
-		}
+		// fetch the root time series
+		series := promSeries(match, start, end, api)
+		//fmt.Printf("Found [%v] root series\n", len(series))
 
-		trees = make([]Node, len(roots))
+		// identify the unique top-level destination services
+		destinations := toDestinations("", "", series)
+		//fmt.Printf("Found [%v] root destinations\n", len(destinations))
+
+		// generate a tree rooted at each top-level destination
+		trees = make([]Node, len(destinations))
 		i := 0
-		for k, _ := range roots {
-			trees[i] = Node{
-				Name:   k,
-				Parent: nil,
+		for k, _ := range destinations {
+			s := strings.Split(k, " ")
+			root := Node{
+				Name:    s[0],
+				Version: s[1],
+				Parent:  nil,
 			}
-			fmt.Println(trees[i])
+			fmt.Printf("Root Service: %v(%v)\n", root.Name, root.Version)
+			ts.buildTree(&root, start, end, api)
+			trees[i] = root
 			i++
 		}
 
-		time.Sleep(o.interval)
-		start = start.Add(o.interval)
+		break
+		//time.Sleep(o.interval)
+		//start = start.Add(o.interval)
 	}
+}
+
+// toDestinations takes a slice of [istio] series and returns a map with keys "destSvc destVersion", removing self-invocation
+func toDestinations(fromService, fromVersion string, series []model.LabelSet) (destinations map[string]bool) {
+	destinations = make(map[string]bool)
+	for _, s := range series {
+		service, serviceOk := s["destination_service"]
+		version, versionOk := s["destination_version"]
+		if fromService == string(service) && fromVersion == string(version) {
+			continue
+		}
+		if serviceOk && versionOk {
+			k := fmt.Sprintf("%v %v", service, version)
+			destinations[k] = true
+		}
+	}
+	return destinations
 }
 
 // TF is the TimeFormat for printing timestamp
 const TF = "2006-01-02 15:04:05"
 
-func (ts TSExpression) series(match string, start, end time.Time, o options, api v1.API) []model.LabelSet {
+func promSeries(match string, start, end time.Time, api v1.API) []model.LabelSet {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -149,75 +196,9 @@ func checkError(err error) {
 	}
 }
 
-// nelsonMap is concurrent key=metric string, value=*nelson.Data
-var nelsonMap sync.Map
-
-type SamplePair model.SamplePair
-
-// Time() returns ms since epoch (i.e. unix timestamp)
-func (sp SamplePair) Time() int64 {
-	return int64(sp.Timestamp)
-}
-
-func (sp SamplePair) Val() float64 {
-	return float64(sp.Value)
-}
-
-func toSamplePairs(in []model.SamplePair, sorted bool) (out []nelson.Sample) {
-	out = make([]nelson.Sample, len(in))
-	for i, v := range in {
-		out[i] = SamplePair(v)
-	}
-
-	// sort by time ascending (process oldest first)
-	if sorted {
-		sort.Slice(out,
-			func(i, j int) bool {
-				return out[i].Time() < out[j].Time()
-			})
-	}
-
-	return out
-}
-
-func processSampleStream(s *model.SampleStream, o options, ep scrape.Scrape) {
-	//nelsonMap.Range(
-	//	func(k interface{}, v interface{}) bool {
-	//		fmt.Println("MapKey:", k)
-	//		return true
-	//	})
-
-	k := s.Metric.String()
-	result, ok := nelsonMap.Load(k)
-	var d *nelson.Data
-	if !ok {
-		fmt.Println("Start tracking TS ", k)
-		ds := nelson.NewData(s.Metric, o.sampleSize, nelson.CommonRules...)
-		d = &ds
-		nelsonMap.Store(k, d)
-	} else {
-		d = result.(*nelson.Data)
-	}
-
-	for _, sp := range toSamplePairs(s.Values, true) {
-		violations := d.AddSample(sp)
-		for k, v := range violations {
-			if v {
-				fmt.Printf("Add Violation! %s %v\n", k, s.Metric)
-				ep.Add(k, s.Metric.String(), 1)
-			}
-
-		}
-	}
-	fmt.Printf("Data: %+v\n", d)
-}
-
 func main() {
 	options := parseFlags()
 	checkError(validateOptions(options))
-
-	//ep := scrape.Scrape{options.endpoint}
-	//go ep.Start()
 
 	config := api.Config{options.server, nil}
 	client, err := api.NewClient(config)
@@ -229,8 +210,7 @@ func main() {
 
 	for _, ts := range tsRoots {
 		wg.Add(1)
-		//go ts.process(options, wg, api, ep)
-		go ts.process(options, wg, api)
+		go ts.process(options, &wg, api)
 	}
 
 	wg.Wait()
