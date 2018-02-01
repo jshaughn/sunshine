@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +12,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jshaughn/sunshine/tree"
+	"github.com/jshaughn/sunshine/vizceral"
 
 	"github.com/prometheus/client_golang/api"
 	"github.com/prometheus/client_golang/api/prometheus/v1"
@@ -75,14 +79,7 @@ var (
 	}
 )
 
-type Node struct {
-	Name     string
-	Version  string
-	Parent   *Node
-	Children []*Node
-}
-
-func (ts TSExpression) buildTree(n *Node, start, end time.Time, api v1.API) {
+func (ts TSExpression) buildTree(n *tree.Tree, start, end time.Time, api v1.API) {
 	match := fmt.Sprintf("%v{source_service=\"%v\",source_version=\"%v\"}", ts, n.Name, n.Version)
 
 	// fetch the root time series
@@ -94,11 +91,11 @@ func (ts TSExpression) buildTree(n *Node, start, end time.Time, api v1.API) {
 	//fmt.Printf("Found [%v] child destinations\n", len(destinations))
 
 	if len(destinations) > 0 {
-		n.Children = make([]*Node, len(destinations))
+		n.Children = make([]*tree.Tree, len(destinations))
 		i := 0
 		for k, _ := range destinations {
 			s := strings.Split(k, " ")
-			child := Node{
+			child := tree.Tree{
 				Name:    s[0],
 				Version: s[1],
 				Parent:  n,
@@ -111,7 +108,7 @@ func (ts TSExpression) buildTree(n *Node, start, end time.Time, api v1.API) {
 	}
 }
 
-var trees []Node
+var trees []tree.Tree
 
 // process() is expected to execute as a goroutine
 func (ts TSExpression) process(o options, wg *sync.WaitGroup, api v1.API) {
@@ -136,11 +133,11 @@ func (ts TSExpression) process(o options, wg *sync.WaitGroup, api v1.API) {
 		//fmt.Printf("Found [%v] root destinations\n", len(destinations))
 
 		// generate a tree rooted at each top-level destination
-		trees = make([]Node, len(destinations))
+		trees = make([]tree.Tree, len(destinations))
 		i := 0
 		for k, _ := range destinations {
 			s := strings.Split(k, " ")
-			root := Node{
+			root := tree.Tree{
 				Name:    s[0],
 				Version: s[1],
 				Parent:  nil,
@@ -149,6 +146,14 @@ func (ts TSExpression) process(o options, wg *sync.WaitGroup, api v1.API) {
 			ts.buildTree(&root, start, end, api)
 			trees[i] = root
 			i++
+		}
+
+		for _, t := range trees {
+			c := vizceral.NewConfig(&t)
+			fmt.Printf("Config:\n%+v\n", c)
+			b, err := json.MarshalIndent(c, "", "  ")
+			checkError(err)
+			fmt.Printf("Config:\n%v\n", string(b))
 		}
 
 		break
