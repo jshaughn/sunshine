@@ -130,8 +130,8 @@ func (ts TSExpression) process(o options, wg *sync.WaitGroup, api v1.API) {
 	}
 
 	for {
-		// query first for root time series
-		query := fmt.Sprintf("sum(rate(%v{source_service=\"\",response_code=~\"%v\"} [%vs]) * 60) by (%v)",
+		// query first for root time series (note that this captures source_service "" or "ingress.istio-system"
+		query := fmt.Sprintf("sum(rate(%v{source_version=\"unknown\",response_code=~\"%v\"} [%vs]) * 60) by (%v)",
 			ts,                                                      // the metric
 			"[2345][0-9][0-9]",                                      // regex for valid response_codes
 			o.interval.Seconds(),                                    // rate for the entire query period
