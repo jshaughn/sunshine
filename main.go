@@ -138,10 +138,10 @@ func (ts TSExpression) process(o options, wg *sync.WaitGroup, api v1.API) {
 			"destination_service,destination_version,response_code") // group by
 
 		// fetch the root time series
-		matrix := promQuery(query, queryTime, api)
+		vector := promQuery(query, queryTime, api)
 
 		// identify the unique top-level destination services
-		destinations := toDestinations("", "", matrix)
+		destinations := toDestinations("", "", vector)
 		fmt.Printf("Found [%v] root destinations\n", len(destinations))
 
 		// generate a tree rooted at each top-level destination

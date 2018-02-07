@@ -13,6 +13,12 @@ To try this out:
 * Setup the Vizceral example app (I cloned it)
   * https://github.com/Netflix/vizceral-example
 
+```
+git clone git@github.com:Netflix/vizceral-example.git
+cd vizceral-example
+npm install
+```
+
 * Install `sunshine` into your go env (use a temp GOPATH if you want to keep this isolated)
   * `go get github.com/jshaughn/sunshine`
 
@@ -20,7 +26,7 @@ To try this out:
   * `$GOPATH/bin/sunshine -server http://<promHost>:9090`
 
 * This will dump out a JSON config, cut and paste it, replacing the contents of
-  * `vizceral-example/sample.json`
+  * `vizceral-example/sample_data.json`
 
 * Start Vizceral:
   * `npm run dev`
