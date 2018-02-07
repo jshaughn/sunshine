@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -79,31 +80,40 @@ var (
 	}
 )
 
-func (ts TSExpression) buildTree(n *tree.Tree, start, end time.Time, api v1.API) {
-	match := fmt.Sprintf("%v{source_service=\"%v\",source_version=\"%v\"}", ts, n.Name, n.Version)
+func (ts TSExpression) buildTree(n *tree.Tree, start time.Time, interval time.Duration, api v1.API) {
+	query := fmt.Sprintf("sum(rate(%v{source_service=\"%v\",source_version=\"%v\",response_code=~\"%v\"} [%vs]) * 60) by (%v)",
+		ts,                                                      // the metric
+		n.Name,                                                  // parent service name
+		n.Version,                                               // parent service version
+		"[2345][0-9][0-9]",                                      // regex for valid response_codes
+		interval.Seconds(),                                      // rate over the entire query period
+		"destination_service,destination_version,response_code") // group by
 
 	// fetch the root time series
-	series := promSeries(match, start, end, api)
+	vector := promQuery(query, start, api)
 	//fmt.Printf("Found [%v] parent series\n", len(series))
 
 	// identify the unique destination services
-	destinations := toDestinations(n.Name, n.Version, series)
+	destinations := toDestinations(n.Name, n.Version, vector)
 	//fmt.Printf("Found [%v] child destinations\n", len(destinations))
 
 	if len(destinations) > 0 {
 		n.Children = make([]*tree.Tree, len(destinations))
 		i := 0
-		for k, _ := range destinations {
+		for k, d := range destinations {
 			s := strings.Split(k, " ")
 			child := tree.Tree{
 				Name:    s[0],
 				Version: s[1],
+				Normal:  d["normal"],
+				Warning: d["warning"],
+				Danger:  d["danger"],
 				Parent:  n,
 			}
 			fmt.Printf("Child Service: %v(%v)->%v(%v)\n", n.Name, n.Version, child.Name, child.Version)
 			n.Children[i] = &child
 			i++
-			ts.buildTree(&child, start, end, api)
+			ts.buildTree(&child, start, interval, api)
 		}
 	}
 }
@@ -114,36 +124,44 @@ var trees []tree.Tree
 func (ts TSExpression) process(o options, wg *sync.WaitGroup, api v1.API) {
 	defer wg.Done()
 
-	start := time.Now()
+	queryTime := time.Now()
 	if o.offset.Seconds() > 0 {
-		start = start.Add(-o.offset)
+		queryTime = queryTime.Add(-o.offset)
 	}
-	start = start.Add(-o.interval)
 
 	for {
-		end := start.Add(o.interval)
-		match := fmt.Sprintf("%v{source_service=\"\"}", ts)
+		// query first for root time series
+		query := fmt.Sprintf("sum(rate(%v{source_service=\"\",response_code=~\"%v\"} [%vs]) * 60) by (%v)",
+			ts,                                                      // the metric
+			"[2345][0-9][0-9]",                                      // regex for valid response_codes
+			o.interval.Seconds(),                                    // rate for the entire query period
+			"destination_service,destination_version,response_code") // group by
 
 		// fetch the root time series
-		series := promSeries(match, start, end, api)
-		//fmt.Printf("Found [%v] root series\n", len(series))
+		matrix := promQuery(query, queryTime, api)
 
 		// identify the unique top-level destination services
-		destinations := toDestinations("", "", series)
-		//fmt.Printf("Found [%v] root destinations\n", len(destinations))
+		destinations := toDestinations("", "", matrix)
+		fmt.Printf("Found [%v] root destinations\n", len(destinations))
 
 		// generate a tree rooted at each top-level destination
 		trees = make([]tree.Tree, len(destinations))
 		i := 0
-		for k, _ := range destinations {
+		for k, d := range destinations {
 			s := strings.Split(k, " ")
+			promExpr := fmt.Sprintf("%v{destination_service=\"%v\",destination_version=\"%v\"}", ts, s[0], s[1])
+			promUrl := fmt.Sprintf("%v/graph?g0.range_input=1h&g0.tab=0&g0.expr=%v", o.server, url.QueryEscape(promExpr))
 			root := tree.Tree{
+				Query:   promUrl,
 				Name:    s[0],
 				Version: s[1],
+				Normal:  d["normal"],
+				Warning: d["warning"],
+				Danger:  d["danger"],
 				Parent:  nil,
 			}
 			fmt.Printf("Root Service: %v(%v)\n", root.Name, root.Version)
-			ts.buildTree(&root, start, end, api)
+			ts.buildTree(&root, queryTime, o.interval, api)
 			trees[i] = root
 			i++
 		}
@@ -162,18 +180,43 @@ func (ts TSExpression) process(o options, wg *sync.WaitGroup, api v1.API) {
 	}
 }
 
+type Destination map[string]float64
+
 // toDestinations takes a slice of [istio] series and returns a map with keys "destSvc destVersion", removing self-invocation
-func toDestinations(fromService, fromVersion string, series []model.LabelSet) (destinations map[string]bool) {
-	destinations = make(map[string]bool)
-	for _, s := range series {
-		service, serviceOk := s["destination_service"]
-		version, versionOk := s["destination_version"]
-		if fromService == string(service) && fromVersion == string(version) {
+func toDestinations(sourceSvc, sourceVer string, vector model.Vector) (destinations map[string]Destination) {
+	destinations = make(map[string]Destination)
+	for _, s := range vector {
+		m := s.Metric
+		destSvc, destSvcOk := m["destination_service"]
+		destVer, destVerOk := m["destination_version"]
+		code, codeOk := m["response_code"]
+		if !destSvcOk || !destVerOk || !codeOk {
+			fmt.Printf("Skipping %v, missing destination labels", m.String())
+		}
+
+		// not expected but remove any self-invocations
+		if sourceSvc == string(destSvc) && sourceVer == string(destVer) {
 			continue
 		}
-		if serviceOk && versionOk {
-			k := fmt.Sprintf("%v %v", service, version)
-			destinations[k] = true
+
+		if destSvcOk && destVerOk {
+			k := fmt.Sprintf("%v %v", destSvc, destVer)
+			dest, destOk := destinations[k]
+			if !destOk {
+				dest = Destination(make(map[string]float64))
+			}
+			val := float64(s.Value)
+			switch {
+			case strings.HasPrefix(string(code), "2"):
+				dest["normal"] += val
+			case strings.HasPrefix(string(code), "4"):
+			case strings.HasPrefix(string(code), "5"):
+				dest["danger"] += val
+			default:
+				dest["warn"] += val
+			}
+
+			destinations[k] = dest
 		}
 	}
 	return destinations
@@ -182,16 +225,23 @@ func toDestinations(fromService, fromVersion string, series []model.LabelSet) (d
 // TF is the TimeFormat for printing timestamp
 const TF = "2006-01-02 15:04:05"
 
-func promSeries(match string, start, end time.Time, api v1.API) []model.LabelSet {
+func promQuery(query string, queryTime time.Time, api v1.API) model.Vector {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	fmt.Printf("Executing query %s&start=%v&end=%v (now=%v)\n", match, start.Format(TF), end.Format(TF), time.Now().Format(TF))
+	fmt.Printf("Executing query %s&time=%v (now=%v)\n", query, queryTime.Format(TF), time.Now().Format(TF))
 
-	value, err := api.Series(ctx, []string{match}, start, end)
+	value, err := api.Query(ctx, query, queryTime)
 	checkError(err)
 
-	return value
+	switch t := value.Type(); t {
+	case model.ValVector: // Instant Vector
+		return value.(model.Vector)
+	default:
+		checkError(errors.New(fmt.Sprintf("No handling for type %v!\n", t)))
+	}
+
+	return nil
 }
 
 func checkError(err error) {
