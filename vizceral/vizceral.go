@@ -96,6 +96,9 @@ func NewConfig(t *tree.Tree) (result Config) {
 func walk(t *tree.Tree, nodes *[]Node, connections *[]Connection, volume *float64) {
 	name := fmt.Sprintf("%v (%v)", t.Name, t.Version)
 	displayName := fmt.Sprintf("%v (%v)", strings.Split(t.Name, ".")[0], t.Version)
+
+	fmt.Println("METADATA:", t.Metadata)
+
 	n := Node{
 		Renderer:    "focusedChild",
 		Name:        name,
@@ -103,7 +106,7 @@ func walk(t *tree.Tree, nodes *[]Node, connections *[]Connection, volume *float6
 		Notices: []Notice{
 			{
 				Title: "Prometheus Graph",
-				Link:  t.Query,
+				Link:  t.Metadata["link_prom_graph"].(string),
 			}},
 	}
 	*nodes = append(*nodes, n)
@@ -122,16 +125,17 @@ func walk(t *tree.Tree, nodes *[]Node, connections *[]Connection, volume *float6
 			//Normal:  t.Normal,
 			//Warning: t.Warning,
 			//Danger:  t.Danger,
-			Normal:  t.Normal * 0.95,
-			Warning: t.Normal * 0.02,
-			Danger:  t.Normal * 0.03,
+			Normal:  t.Metadata["req_per_min_2xx"].(float64) * 0.95,
+			Warning: t.Metadata["req_per_min_2xx"].(float64) * 0.02,
+			Danger:  t.Metadata["req_per_min_2xx"].(float64) * 0.03,
 		},
 	}
 	*connections = append(*connections, c)
 
-	*volume += t.Normal
-	*volume += t.Warning
-	*volume += t.Danger
+	*volume += t.Metadata["req_per_min_2xx"].(float64)
+	*volume += t.Metadata["req_per_min_3xx"].(float64)
+	*volume += t.Metadata["req_per_min_4xx"].(float64)
+	*volume += t.Metadata["req_per_min_5xx"].(float64)
 
 	for _, c := range t.Children {
 		walk(c, nodes, connections, volume)

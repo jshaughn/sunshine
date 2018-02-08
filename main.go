@@ -80,40 +80,37 @@ var (
 	}
 )
 
-func (ts TSExpression) buildTree(n *tree.Tree, start time.Time, interval time.Duration, api v1.API) {
+func (ts TSExpression) buildTree(n *tree.Tree, start time.Time, o options, api v1.API) {
 	query := fmt.Sprintf("sum(rate(%v{source_service=\"%v\",source_version=\"%v\",response_code=~\"%v\"} [%vs]) * 60) by (%v)",
 		ts,                                                      // the metric
 		n.Name,                                                  // parent service name
 		n.Version,                                               // parent service version
 		"[2345][0-9][0-9]",                                      // regex for valid response_codes
-		interval.Seconds(),                                      // rate over the entire query period
+		o.interval.Seconds(),                                    // rate over the entire query period
 		"destination_service,destination_version,response_code") // group by
 
 	// fetch the root time series
 	vector := promQuery(query, start, api)
-	//fmt.Printf("Found [%v] parent series\n", len(series))
 
 	// identify the unique destination services
 	destinations := toDestinations(n.Name, n.Version, vector)
-	//fmt.Printf("Found [%v] child destinations\n", len(destinations))
 
 	if len(destinations) > 0 {
 		n.Children = make([]*tree.Tree, len(destinations))
 		i := 0
 		for k, d := range destinations {
 			s := strings.Split(k, " ")
+			d["link_prom_graph"] = linkPromGraph(o.server, string(ts), s[0], s[1])
 			child := tree.Tree{
-				Name:    s[0],
-				Version: s[1],
-				Normal:  d["normal"],
-				Warning: d["warning"],
-				Danger:  d["danger"],
-				Parent:  n,
+				Name:     s[0],
+				Version:  s[1],
+				Parent:   n,
+				Metadata: d,
 			}
 			fmt.Printf("Child Service: %v(%v)->%v(%v)\n", n.Name, n.Version, child.Name, child.Version)
 			n.Children[i] = &child
 			i++
-			ts.buildTree(&child, start, interval, api)
+			ts.buildTree(&child, start, o, api)
 		}
 	}
 }
@@ -149,19 +146,15 @@ func (ts TSExpression) process(o options, wg *sync.WaitGroup, api v1.API) {
 		i := 0
 		for k, d := range destinations {
 			s := strings.Split(k, " ")
-			promExpr := fmt.Sprintf("%v{destination_service=\"%v\",destination_version=\"%v\"}", ts, s[0], s[1])
-			promUrl := fmt.Sprintf("%v/graph?g0.range_input=1h&g0.tab=0&g0.expr=%v", o.server, url.QueryEscape(promExpr))
+			d["link_prom_graph"] = linkPromGraph(o.server, string(ts), s[0], s[1])
 			root := tree.Tree{
-				Query:   promUrl,
-				Name:    s[0],
-				Version: s[1],
-				Normal:  d["normal"],
-				Warning: d["warning"],
-				Danger:  d["danger"],
-				Parent:  nil,
+				Name:     s[0],
+				Version:  s[1],
+				Parent:   nil,
+				Metadata: d,
 			}
 			fmt.Printf("Root Service: %v(%v)\n", root.Name, root.Version)
-			ts.buildTree(&root, queryTime, o.interval, api)
+			ts.buildTree(&root, queryTime, o, api)
 			trees[i] = root
 			i++
 		}
@@ -180,9 +173,21 @@ func (ts TSExpression) process(o options, wg *sync.WaitGroup, api v1.API) {
 	}
 }
 
-type Destination map[string]float64
+func linkPromGraph(server, ts, name, version string) (link string) {
+	promExpr := fmt.Sprintf("%v{destination_service=\"%v\",destination_version=\"%v\"}", ts, name, version)
+	link = fmt.Sprintf("%v/graph?g0.range_input=1h&g0.tab=0&g0.expr=%v", server, url.QueryEscape(promExpr))
+	return link
+}
 
-// toDestinations takes a slice of [istio] series and returns a map with keys "destSvc destVersion", removing self-invocation
+type Destination map[string]interface{}
+
+// toDestinations takes a slice of [istio] series and returns a map K => D
+// key = "destSvc destVersion"
+// val = Destination (map) with the following keys
+//          req_per_min_2xx float64
+//          req_per_min_3xx float64
+//          req_per_min_4xx float64
+//          req_per_min_5xx float64
 func toDestinations(sourceSvc, sourceVer string, vector model.Vector) (destinations map[string]Destination) {
 	destinations = make(map[string]Destination)
 	for _, s := range vector {
@@ -203,18 +208,25 @@ func toDestinations(sourceSvc, sourceVer string, vector model.Vector) (destinati
 			k := fmt.Sprintf("%v %v", destSvc, destVer)
 			dest, destOk := destinations[k]
 			if !destOk {
-				dest = Destination(make(map[string]float64))
+				dest = Destination(make(map[string]interface{}))
+				dest["req_per_min_2xx"] = 0.0
+				dest["req_per_min_3xx"] = 0.0
+				dest["req_per_min_4xx"] = 0.0
+				dest["req_per_min_5xx"] = 0.0
 			}
 			val := float64(s.Value)
+			var ck string
 			switch {
 			case strings.HasPrefix(string(code), "2"):
-				dest["normal"] += val
+				ck = "req_per_min_2xx"
+			case strings.HasPrefix(string(code), "3"):
+				ck = "req_per_min_3xx"
 			case strings.HasPrefix(string(code), "4"):
+				ck = "req_per_min_4xx"
 			case strings.HasPrefix(string(code), "5"):
-				dest["danger"] += val
-			default:
-				dest["warn"] += val
+				ck = "req_per_min_5xx"
 			}
+			dest[ck] = dest[ck].(float64) + val
 
 			destinations[k] = dest
 		}

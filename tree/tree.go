@@ -1,13 +1,11 @@
 // tree.go
 package tree
 
+// Tree is basically a [sub-]tree node
 type Tree struct {
-	Query    string
 	Name     string
 	Version  string
-	Normal   float64
-	Warning  float64
-	Danger   float64
 	Parent   *Tree
 	Children []*Tree
+	Metadata map[string]interface{}
 }
