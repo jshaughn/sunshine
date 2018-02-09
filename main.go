@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jshaughn/sunshine/cytoscope"
 	"github.com/jshaughn/sunshine/tree"
 	"github.com/jshaughn/sunshine/vizceral"
 
@@ -160,11 +161,15 @@ func (ts TSExpression) process(o options, wg *sync.WaitGroup, api v1.API) {
 		}
 
 		for _, t := range trees {
-			c := vizceral.NewConfig(&t)
-			fmt.Printf("Config:\n%+v\n", c)
-			b, err := json.MarshalIndent(c, "", "  ")
+			v := vizceral.NewConfig(&t)
+			b, err := json.MarshalIndent(v, "", "  ")
 			checkError(err)
-			fmt.Printf("Config:\n%v\n", string(b))
+			fmt.Printf("Vizceral Config:\n%v\n", string(b))
+
+			c := cytoscope.NewConfig(&t)
+			b, err = json.MarshalIndent(c, "", "  ")
+			checkError(err)
+			fmt.Printf("Cytoscope Config:\n%v\n", string(b))
 		}
 
 		break
