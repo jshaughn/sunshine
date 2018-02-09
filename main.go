@@ -16,7 +16,7 @@ import (
 
 	"github.com/jshaughn/sunshine/cytoscope"
 	"github.com/jshaughn/sunshine/tree"
-	"github.com/jshaughn/sunshine/vizceral"
+	//"github.com/jshaughn/sunshine/vizceral"
 
 	"github.com/prometheus/client_golang/api"
 	"github.com/prometheus/client_golang/api/prometheus/v1"
@@ -161,13 +161,13 @@ func (ts TSExpression) process(o options, wg *sync.WaitGroup, api v1.API) {
 		}
 
 		for _, t := range trees {
-			v := vizceral.NewConfig(&t)
-			b, err := json.MarshalIndent(v, "", "  ")
-			checkError(err)
-			fmt.Printf("Vizceral Config:\n%v\n", string(b))
+			//v := vizceral.NewConfig(&t)
+			//b, err := json.MarshalIndent(v, "", "  ")
+			//checkError(err)
+			//fmt.Printf("Vizceral Config:\n%v\n", string(b))
 
 			c := cytoscope.NewConfig(&t)
-			b, err = json.MarshalIndent(c, "", "  ")
+			b, err := json.MarshalIndent(c, "", "  ")
 			checkError(err)
 			fmt.Printf("Cytoscope Config:\n%v\n", string(b))
 		}
@@ -189,6 +189,7 @@ type Destination map[string]interface{}
 // toDestinations takes a slice of [istio] series and returns a map K => D
 // key = "destSvc destVersion"
 // val = Destination (map) with the following keys
+//          req_per_min     float64
 //          req_per_min_2xx float64
 //          req_per_min_3xx float64
 //          req_per_min_4xx float64
@@ -214,6 +215,7 @@ func toDestinations(sourceSvc, sourceVer string, vector model.Vector) (destinati
 			dest, destOk := destinations[k]
 			if !destOk {
 				dest = Destination(make(map[string]interface{}))
+				dest["req_per_min"] = 0.0
 				dest["req_per_min_2xx"] = 0.0
 				dest["req_per_min_3xx"] = 0.0
 				dest["req_per_min_4xx"] = 0.0
@@ -232,6 +234,7 @@ func toDestinations(sourceSvc, sourceVer string, vector model.Vector) (destinati
 				ck = "req_per_min_5xx"
 			}
 			dest[ck] = dest[ck].(float64) + val
+			dest["req_per_min"] = dest["req_per_min"].(float64) + val
 
 			destinations[k] = dest
 		}

@@ -105,7 +105,7 @@ func walk(t *tree.Tree, nodes *[]Node, nodeAttrs *[]NodeAttribute, edges *[]Edge
 		e := Edge{
 			Id:     edgeId,
 			Source: parentNodeId,
-			Target: *nodeIdSequence,
+			Target: nodeId,
 		}
 		*edges = append(*edges, e)
 		addRpmEdgeAttr(edgeAttrs, edgeId, t, "req_per_min_2xx")
