@@ -112,17 +112,17 @@ func addRpm(ed *EdgeData, t *tree.Tree) {
 		}
 		switch {
 		case errorRate > 1.0:
-			ed.Color = "red" // "#ff0000"
+			ed.Color = "red"
 			ed.Text = fmt.Sprintf("rpm=%.2f (err=%.2f%%)", rpm, errorRate)
 		case errorRate > 0.0:
-			ed.Color = "orange" // #ff9900"
+			ed.Color = "orange"
 			ed.Text = fmt.Sprintf("rpm=%.2f (err=%.2f%%)", rpm, errorRate)
 		default:
-			ed.Color = "green" //#009933"
+			ed.Color = "green"
 			ed.Text = fmt.Sprintf("rpm=%.2f", rpm)
 		}
 	} else {
-		ed.Color = "black" // #000000"
+		ed.Color = "black"
 		ed.Text = "rpm=0"
 	}
 }
