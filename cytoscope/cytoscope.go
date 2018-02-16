@@ -46,14 +46,17 @@ type Config struct {
 	Elements Elements `json:"elements"`
 }
 
-func NewConfig(t *tree.Tree) (result Config) {
+// NewConfig currently ignores namespace arg
+func NewConfig(namespace string, ts *[]tree.Tree) (result Config) {
 	nodes := []NodeWrapper{}
 	edges := []EdgeWrapper{}
 
 	var nodeIdSequence int
 	var edgeIdSequence int
 
-	walk(t, &nodes, &edges, "", &nodeIdSequence, &edgeIdSequence)
+	for _, t := range *ts {
+		walk(&t, &nodes, &edges, "", &nodeIdSequence, &edgeIdSequence)
+	}
 
 	elements := Elements{nodes, edges}
 	result = Config{elements}

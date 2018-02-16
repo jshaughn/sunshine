@@ -46,24 +46,26 @@ type Node struct {
 
 type Config Node
 
-func NewConfig(t *tree.Tree) (result Config) {
-	meshInternetNode := Node{
+func NewConfig(namespace string, ts *[]tree.Tree) (result Config) {
+	namespaceInternetNode := Node{
 		Renderer: "focusedChild",
 		Name:     "INTERNET",
 	}
-	meshNodes := []Node{meshInternetNode}
-	var meshConnections []Connection
+	namespaceNodes := []Node{namespaceInternetNode}
+	var namespaceConnections []Connection
 	var maxVolume float64
 
-	walk(t, &meshNodes, &meshConnections, &maxVolume)
+	for _, t := range *ts {
+		walk(&t, &namespaceNodes, &namespaceConnections, &maxVolume)
+	}
 
-	meshNode := Node{
+	regionNamespaceNode := Node{
 		Renderer:    "region",
-		Name:        "istio-mesh",
+		Name:        namespace,
 		Updated:     time.Now().Unix(),
 		MaxVolume:   maxVolume,
-		Nodes:       meshNodes,
-		Connections: meshConnections,
+		Nodes:       namespaceNodes,
+		Connections: namespaceConnections,
 	}
 
 	regionInternetNode := Node{
@@ -72,7 +74,7 @@ func NewConfig(t *tree.Tree) (result Config) {
 	}
 	regionInternetConnection := Connection{
 		Source: "INTERNET",
-		Target: "istio-mesh",
+		Target: namespace,
 		Metrics: Metrics{
 			// TODO, should break up MaxVolume by code
 			Normal:  maxVolume * 0.95,
@@ -81,7 +83,7 @@ func NewConfig(t *tree.Tree) (result Config) {
 		},
 	}
 
-	regionNodes := []Node{regionInternetNode, meshNode}
+	regionNodes := []Node{regionInternetNode, regionNamespaceNode}
 	regionConnections := []Connection{regionInternetConnection}
 
 	result = Config{

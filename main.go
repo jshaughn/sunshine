@@ -16,7 +16,7 @@ import (
 
 	"github.com/jshaughn/sunshine/cytoscope"
 	"github.com/jshaughn/sunshine/tree"
-	//"github.com/jshaughn/sunshine/vizceral"
+	"github.com/jshaughn/sunshine/vizceral"
 
 	"github.com/prometheus/client_golang/api"
 	"github.com/prometheus/client_golang/api/prometheus/v1"
@@ -160,17 +160,15 @@ func (ts TSExpression) process(o options, wg *sync.WaitGroup, api v1.API) {
 			i++
 		}
 
-		for _, t := range trees {
-			//v := vizceral.NewConfig(&t)
-			//b, err := json.MarshalIndent(v, "", "  ")
-			//checkError(err)
-			//fmt.Printf("Vizceral Config:\n%v\n", string(b))
+		v := vizceral.NewConfig("istio-system", &trees)
+		b, err := json.MarshalIndent(v, "", "  ")
+		checkError(err)
+		fmt.Printf("Vizceral Config:\n%v\n", string(b))
 
-			c := cytoscope.NewConfig(&t)
-			b, err := json.MarshalIndent(c, "", "  ")
-			checkError(err)
-			fmt.Printf("Cytoscope Config:\n%v\n", string(b))
-		}
+		c := cytoscope.NewConfig("istio-system", &trees)
+		b, err = json.MarshalIndent(c, "", "  ")
+		checkError(err)
+		fmt.Printf("Cytoscope Config:\n%v\n", string(b))
 
 		break
 		//time.Sleep(o.interval)
